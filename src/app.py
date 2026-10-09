@@ -38,8 +38,8 @@ def main() -> None:
         df = pd.DataFrame([p.__dict__ for p in report.packets])
         fig = px.bar(df.groupby("protocol").size().reset_index(name="count"), x="protocol", y="count", title="Protocols in capture")
         fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e7ecf3", height=320)
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(df, width="stretch", hide_index=True)
     if report.anomalies:
         for a in report.anomalies:
             st.warning(a)
