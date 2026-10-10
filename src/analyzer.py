@@ -183,7 +183,7 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
 
 
 def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
-    """Compatibility entry point: parse marker fixtures and real PCAP/PCAPNG."""
+    """Compatibility entry point: parse legacy marker fixtures and real PCAP/PCAPNG."""
     try:
         size = path.stat().st_size
     except OSError as exc:
@@ -193,7 +193,17 @@ def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
     data = path.read_bytes()
     if len(data) < 4:
         raise ValueError("File is too small to be a PCAP or PCAPNG capture.")
-    if any(marker in data for marker in (b"IKE_SA_INIT", b"ESP_PACKET", b"AH_PACKET", b"ISAKMP")):
+    # The old repository's fixture has a PCAP magic number followed by an all-zero
+    # global header. Restrict marker compatibility to that exact invalid-header shape,
+    # so a real capture containing an ASCII marker in payload data is not misclassified.
+    classic_magic = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"}
+    legacy_fixture = (
+        len(data) >= 24
+        and data[:4] in classic_magic
+        and data[4:24] == b"\x00" * 20
+        and any(marker in data[24:] for marker in (b"IKE_SA_INIT", b"ESP_PACKET", b"AH_PACKET", b"ISAKMP"))
+    )
+    if legacy_fixture:
         packets = _parse_synthetic_markers(data)
         if packets:
             return packets
