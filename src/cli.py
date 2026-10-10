@@ -8,8 +8,7 @@ from typing import Optional
 import typer
 
 from src.analyzer import analyze_pcap, report_to_dict
-from src.ipsec_features import analyze_config_file, remediation_report
-from src.reporting import build_report_json
+from src.ipsec_features import analyze_config_file
 
 app = typer.Typer(
     name="tunnelscope",
