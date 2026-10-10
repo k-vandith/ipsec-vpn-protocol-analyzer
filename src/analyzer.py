@@ -105,7 +105,7 @@ def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
 def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
     """Parse classic PCAP and PCAPNG through Scapy; never decrypt payloads."""
     try:
-        from scapy.all import IP, IPv6, UDP, rdpcap
+        from scapy.all import AH, ESP, IP, IPv6, UDP, rdpcap
     except ImportError as exc:
         raise RuntimeError("PCAP parsing needs Scapy. Install it with: python -m pip install scapy") from exc
 
@@ -128,6 +128,10 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
         ip = packet.getlayer(IP)
         ipv6 = packet.getlayer(IPv6)
         udp = packet.getlayer(UDP)
+        if packet.haslayer(ESP):
+            protocol, info = "ESP", "ESP encrypted payload"
+        elif packet.haslayer(AH):
+            protocol, info = "AH", "Authentication Header"
         if ip is not None:
             src, dst = str(ip.src), str(ip.dst)
             if int(ip.proto) == 50:
