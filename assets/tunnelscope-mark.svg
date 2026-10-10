@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="TunnelScope logo">
+  <rect width="128" height="128" rx="28" fill="#0b0d14"/>
+  <path d="M18 34 64 14 110 34 110 90 64 114 18 90Z" fill="#132c36" stroke="#70d4e2" stroke-width="4"/>
+  <path d="M36 42h56M64 42v44M38 86h52" stroke="#70d4e2" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="38" cy="42" r="8" fill="#0b0d14" stroke="#70d4e2" stroke-width="4"/>
+  <circle cx="90" cy="42" r="8" fill="#0b0d14" stroke="#70d4e2" stroke-width="4"/>
+  <circle cx="64" cy="88" r="9" fill="#70d4e2"/>
+  <path d="M43 42h42M64 50v29" stroke="#bdf4fa" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 5"/>
+</svg>
