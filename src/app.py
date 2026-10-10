@@ -391,11 +391,19 @@ def _overview(reports: list[AnalysisReport], findings: list[ConfigFinding]) -> N
         st.write("Load a fictional training case or choose your own PCAP and VPN configuration.")
         c1, c2 = st.columns(2)
         with c1:
-            st.button(
+            if st.button(
                 "Load sample case", type="primary", use_container_width=True,
                 help="Analyse a generated four-packet IKEv2/ESP trace and fictional weak VPN configurations.",
-                on_click=_load_sample_case,
-            )
+            ):
+                try:
+                    with st.spinner("Generating and analysing the fictional case…"):
+                        _load_sample_case()
+                    st.success("Sample review complete.")
+                except (ValueError, RuntimeError, OSError) as exc:
+                    st.error(f"Could not load the sample case: {exc}")
+                except Exception:
+                    st.error("The sample case could not be loaded. Check that the app dependencies are installed.")
+
         with c2:
             st.button(
                 "Upload my files", use_container_width=True,
@@ -481,11 +489,20 @@ def _upload_page() -> None:
         st.info("No files selected. Use the template buttons below or load the sample case.")
     a, b, c = st.columns([1.2, 1, 1])
     with a:
-        st.button(
+        analyse_clicked = st.button(
             "Analyse selected files", type="primary", use_container_width=True, disabled=not selected,
             help="Parse selected captures and check selected VPN config lines.",
-            on_click=_analyse_staged_files, args=(list(captures or []), list(configs or [])),
         )
+        if analyse_clicked:
+            try:
+                with st.spinner("Validating uploads and analysing packet/configuration data…"):
+                    _analyse_staged_files(list(captures or []), list(configs or []))
+                st.success("Review complete. Temporary uploaded copies have been removed.")
+            except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
+                st.error(f"Could not analyse these files: {exc}")
+            except Exception:
+                st.error("The review could not be completed. Try a smaller capture or verify the file format.")
+
     with b:
         st.button("Load sample case", use_container_width=True, on_click=_load_sample_case,
                   help="Loads a four-packet synthetic IKEv2/ESP capture plus fictional strongSwan and Cisco configs.")
