@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -86,6 +87,18 @@ def _init_state() -> None:
         st.session_state.setdefault(key, value)
 
 
+def _preview_config(payload: bytes) -> str:
+    """Show a short config preview without exposing common inline secret assignments."""
+    text = payload[:2000].decode("utf-8", errors="replace")
+    text = re.sub(
+        r"""(?im)(\b(?:secret|password|psk|pre-shared-key|private[_-]?key|preshared[_-]?key)\b\s*(?:=|:)\s*)(?:"[^"]*"|'[^']*'|[^\s#;]+)""",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?im)(crypto\s+isakmp\s+key\s+)\S+", r"\1[REDACTED]", text)
+    return text.strip()[:500].replace("\n", " ⏎ ")
+
+
 def _go_to(page: str) -> None:
     st.session_state["current_page"] = page
 
@@ -160,16 +173,21 @@ def _analyse_staged_files(capture_uploads: list[object], config_uploads: list[ob
 
 
 def _load_sample_case() -> None:
-    with tempfile.TemporaryDirectory(prefix="tunnelscope-sample-") as temp_dir:
-        capture, configs = write_sample_case(temp_dir)
-        report = analyze_pcap(capture)
-        findings = []
-        for config in configs:
-            findings.extend(analyze_config_file(config))
-        _store_results([report], findings, "Synthetic training case", 1 + len(configs))
+    st.session_state["action_error"] = ""
+    try:
+        with tempfile.TemporaryDirectory(prefix="tunnelscope-sample-") as temp_dir:
+            capture, configs = write_sample_case(temp_dir)
+            report = analyze_pcap(capture)
+            findings = []
+            for config in configs:
+                findings.extend(analyze_config_file(config))
+            _store_results([report], findings, "Synthetic training case", 1 + len(configs))
+    except (ValueError, RuntimeError, OSError) as exc:
+        st.session_state["action_error"] = f"Could not load the sample case: {exc}"
+    except Exception:
+        st.session_state["action_error"] = "The sample case could not be loaded. Check that app dependencies are installed."
 
 
-@st.cache_data(show_spinner=False)
 def _sample_capture_bytes() -> bytes:
     with tempfile.TemporaryDirectory(prefix="tunnelscope-template-") as temp_dir:
         capture = build_demo_capture(Path(temp_dir) / "tunnelscope-sample.pcap")
@@ -482,7 +500,7 @@ def _upload_page() -> None:
                 "File": item.name,
                 "Size": f"{len(payload) / 1024:.1f} KB",
                 "Preview": "Binary capture — contents not rendered" if Path(item.name).suffix.lower() in CAPTURE_EXTENSIONS
-                    else payload[:240].decode("utf-8", errors="replace").strip().replace("\n", " ⏎ "),
+                    else _preview_config(payload),
             })
         st.dataframe(pd.DataFrame(preview), hide_index=True, width="stretch")
     else:
@@ -821,6 +839,10 @@ def main() -> None:
         "<div class='ts-local'>● LOCAL-FIRST</div></div>",
         unsafe_allow_html=True,
     )
+    if st.session_state.get("action_error"):
+        st.error(st.session_state["action_error"])
+        st.session_state["action_error"] = ""
+
     page = st.session_state["current_page"]
     reports = _reports()
     findings = _config_findings()
