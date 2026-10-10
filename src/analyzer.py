@@ -76,10 +76,10 @@ def _is_ike_header(payload: bytes) -> bool:
 def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
     """Read the repository's historical marker fixture (not a real packet trace)."""
     markers = (
-        (b"IKE_SA_INIT", "IKEv2", "IKEv2 IKE_SA_INIT"),
-        (b"ESP_PACKET", "ESP", "ESP marker fixture"),
-        (b"AH_PACKET", "AH", "AH marker fixture"),
-        (b"ISAKMP", "IKE", "IKEv1 marker fixture"),
+        ("IKE_SA_INIT", "IKEv2", "IKEv2 IKE_SA_INIT"),
+        ("ESP_PACKET", "ESP", "ESP marker fixture"),
+        ("AH_PACKET", "AH", "AH marker fixture"),
+        ("ISAKMP", "IKE", "IKEv1 marker fixture"),
     )
     text = data.decode("latin-1", errors="ignore")
     packets: list[dict[str, Any]] = []
