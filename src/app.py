@@ -23,7 +23,6 @@ from src.analyzer import AnalysisReport, analyze_pcap, build_demo_capture
 from src.ipsec_features import (
     ConfigFinding,
     analyze_config_file,
-    handshake_anomaly_score,
     remediation_report,
 )
 from src.reporting import (
