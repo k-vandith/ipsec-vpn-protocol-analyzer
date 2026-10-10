@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import html
-import json
 import re
 import sys
 import tempfile
@@ -18,10 +17,9 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-from src.analyzer import AnalysisReport, analyze_pcap, build_demo_capture, report_to_dict
+from src.analyzer import AnalysisReport, analyze_pcap, build_demo_capture
 from src.ipsec_features import (
     ConfigFinding,
     analyze_config_file,
