@@ -1,6 +1,8 @@
 """Tests for safe and useful report exports."""
 from __future__ import annotations
 
+import csv
+import io
 import json
 
 from src.analyzer import AnalysisReport, PacketSummary
@@ -57,3 +59,24 @@ def test_pdf_report_is_available_only_with_optional_extra() -> None:
 
     result = build_pdf_report([], [])
     assert result.startswith(b"%PDF")
+
+
+
+def test_packets_csv_neutralizes_formula_cells_and_preserves_zero_ports() -> None:
+    report = AnalysisReport(
+        total_packets=1,
+        capture_name='  =HYPERLINK("https://attacker.invalid", "open")',
+        packets=[PacketSummary(
+            index=0, timestamp=0.0, src="192.0.2.1", dst="192.0.2.2",
+            protocol="Other", length=60, info="=1+1",
+            src_port=0, dst_port=0,
+        )],
+    )
+
+    rows = list(csv.DictReader(io.StringIO(build_packets_csv([report]))))
+    assert len(rows) == 1
+    assert rows[0]["capture"].startswith("'")
+    assert rows[0]["capture"].endswith('=HYPERLINK("https://attacker.invalid", "open")')
+    assert rows[0]["info"] == "'=1+1"
+    assert rows[0]["source_port"] == "0"
+    assert rows[0]["destination_port"] == "0"
