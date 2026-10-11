@@ -57,3 +57,19 @@ def test_pdf_report_is_available_only_with_optional_extra() -> None:
 
     result = build_pdf_report([], [])
     assert result.startswith(b"%PDF")
+
+
+
+def test_packet_csv_neutralizes_formula_like_capture_names() -> None:
+    report = AnalysisReport(
+        total_packets=1,
+        capture_name='=HYPERLINK("https://evil.invalid","click")',
+        packets=[PacketSummary(
+            index=0, timestamp=1.0, src="192.0.2.1", dst="198.51.100.2",
+            protocol="Other", length=60, info="regular packet",
+        )],
+    )
+
+    csv_text = build_packets_csv([report])
+
+    assert "'=HYPERLINK" in csv_text
