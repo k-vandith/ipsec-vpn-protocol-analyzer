@@ -186,6 +186,12 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
                 "info": info,
                 "exchange": exchange,
             })
+    except ValueError as exc:
+        if "more than" in str(exc) and "packets" in str(exc):
+            raise
+        raise ValueError("Could not read this capture. Check that it is a valid PCAP or PCAPNG file.") from exc
+    except Exception as exc:
+        raise ValueError("Could not read this capture. Check that it is a valid PCAP or PCAPNG file.") from exc
     finally:
         capture.close()
     return packets
