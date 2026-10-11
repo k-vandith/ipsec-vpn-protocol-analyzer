@@ -53,16 +53,13 @@ def test_capture_missing_and_invalid_files_fail_clearly(tmp_path: Path) -> None:
         analyze_pcap(invalid)
 
 
-def test_marker_fixture_compatibility(tmp_path: Path) -> None:
-    # Preserve support for the original repository's legacy synthetic marker fixture.
+def test_legacy_marker_fixture_is_not_misreported_as_real_traffic(tmp_path: Path) -> None:
     capture = tmp_path / "legacy-demo.pcap"
     capture.write_bytes(b"\xd4\xc3\xb2\xa1" + b"\x00" * 20 + b"IKE_SA_INIT ESP_PACKET ISAKMP AH_PACKET")
-    report = analyze_pcap(capture)
-    assert report.total_packets >= 4
-    assert report.ikev2_count >= 1
-    assert report.esp_count >= 1
-    assert report.ah_count >= 1
-    assert report.ike_count >= 1
+
+    with pytest.raises(ValueError, match="not a valid packet capture"):
+        analyze_pcap(capture)
+
 
 
 def test_large_capture_is_rejected_before_parsing(tmp_path: Path) -> None:
