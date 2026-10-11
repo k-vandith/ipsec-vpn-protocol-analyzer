@@ -70,7 +70,11 @@ def _ike_version_and_exchange(payload: bytes) -> tuple[str, str]:
 
 
 def _is_ike_header(payload: bytes) -> bool:
-    return len(payload) >= 28 and (payload[17] >> 4) in {1, 2}
+    """Validate the fixed IKE header, including the advertised message length."""
+    if len(payload) < 28 or (payload[17] >> 4) not in {1, 2}:
+        return False
+    message_length = struct.unpack("!I", payload[24:28])[0]
+    return 28 <= message_length <= len(payload)
 
 
 def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
@@ -105,19 +109,20 @@ def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
 def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
     """Parse classic PCAP and PCAPNG through Scapy; never decrypt payloads."""
     try:
-        from scapy.all import AH, ESP, IP, IPv6, UDP, rdpcap
+        from scapy.all import AH, ESP, IP, IPv6, UDP, PcapReader
     except ImportError as exc:
         raise RuntimeError("PCAP parsing needs Scapy. Install it with: python -m pip install scapy") from exc
 
     try:
-        capture = rdpcap(str(path))
+        capture = PcapReader(str(path))
     except Exception as exc:
         raise ValueError("Could not read this capture. Check that it is a valid PCAP or PCAPNG file.") from exc
-    if len(capture) > MAX_PACKET_COUNT:
-        raise ValueError(f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures.")
 
     packets: list[dict[str, Any]] = []
-    for index, packet in enumerate(capture):
+    try:
+        for index, packet in enumerate(capture):
+            if index >= MAX_PACKET_COUNT:
+                raise ValueError(f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures.")
         src = "unknown"
         dst = "unknown"
         source_port: int | None = None
@@ -167,18 +172,20 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
                     else:
                         protocol, info = "UDP/500 or 4500", "Empty IKE/NAT-T payload"
 
-        packets.append({
-            "index": index,
-            "proto": protocol,
-            "src": src,
-            "dst": dst,
-            "sport": source_port,
-            "dport": dest_port,
-            "len": int(len(packet)),
-            "ts": float(getattr(packet, "time", index)),
-            "info": info,
-            "exchange": exchange,
-        })
+            packets.append({
+                "index": index,
+                "proto": protocol,
+                "src": src,
+                "dst": dst,
+                "sport": source_port,
+                "dport": dest_port,
+                "len": int(len(packet)),
+                "ts": float(getattr(packet, "time", index)),
+                "info": info,
+                "exchange": exchange,
+            })
+    finally:
+        capture.close()
     return packets
 
 
@@ -190,23 +197,20 @@ def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
         raise FileNotFoundError(f"Capture not found or unreadable: {path}") from exc
     if size > MAX_CAPTURE_BYTES:
         raise ValueError("Capture exceeds the 100 MB upload limit.")
-    data = path.read_bytes()
-    if len(data) < 4:
+    with path.open("rb") as handle:
+        header = handle.read(24)
+    if len(header) < 4:
         raise ValueError("File is too small to be a PCAP or PCAPNG capture.")
     # The old repository's fixture has a PCAP magic number followed by an all-zero
-    # global header. Restrict marker compatibility to that exact invalid-header shape,
-    # so a real capture containing an ASCII marker in payload data is not misclassified.
+    # global header. Only read the complete file for this rare compatibility path;
+    # valid captures are streamed by Scapy below instead of copied into memory first.
     classic_magic = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"}
-    legacy_fixture = (
-        len(data) >= 24
-        and data[:4] in classic_magic
-        and data[4:24] == b"\x00" * 20
-        and any(marker in data[24:] for marker in (b"IKE_SA_INIT", b"ESP_PACKET", b"AH_PACKET", b"ISAKMP"))
-    )
-    if legacy_fixture:
-        packets = _parse_synthetic_markers(data)
-        if packets:
-            return packets
+    if len(header) >= 24 and header[:4] in classic_magic and header[4:24] == b"\x00" * 20:
+        data = path.read_bytes()
+        if any(marker in data[24:] for marker in (b"IKE_SA_INIT", b"ESP_PACKET", b"AH_PACKET", b"ISAKMP")):
+            packets = _parse_synthetic_markers(data)
+            if packets:
+                return packets
     return _parse_capture_scapy(path)
 
 
@@ -228,6 +232,20 @@ def _risk_and_anomalies(report: AnalysisReport) -> None:
     report.risk_score = round(min(1.0, score), 3)
 
 
+def _capture_format(path: Path) -> str:
+    """Report the capture format from its signature rather than its filename suffix."""
+    with path.open("rb") as handle:
+        magic = handle.read(4)
+    if magic == b"\x0a\x0d\x0d\x0a":
+        return "PCAPNG"
+    if magic in {
+        b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4",
+        b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d",
+    }:
+        return "PCAP"
+    return "Unknown"
+
+
 def analyze_pcap(path: str | Path) -> AnalysisReport:
     path = Path(path).expanduser()
     if not path.exists() or not path.is_file():
@@ -241,7 +259,7 @@ def analyze_pcap(path: str | Path) -> AnalysisReport:
     report = AnalysisReport(
         total_packets=len(parsed),
         capture_name=path.name,
-        capture_format="PCAPNG" if path.suffix.lower() == ".pcapng" else "PCAP",
+        capture_format=_capture_format(path),
         capture_size_bytes=path.stat().st_size,
     )
     start = min(float(p["ts"]) for p in parsed)
