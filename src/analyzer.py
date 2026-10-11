@@ -10,15 +10,19 @@ from typing import Any
 IKE_PORTS = {500, 4500}
 MAX_CAPTURE_BYTES = 100 * 1024 * 1024
 MAX_PACKET_COUNT = 1_000_000
-IKE_EXCHANGES = {
+IKEV1_EXCHANGES = {
     2: "Main mode",
     4: "Aggressive mode",
     32: "Quick mode",
+}
+IKEV2_EXCHANGES = {
     34: "IKE_SA_INIT",
     35: "IKE_AUTH",
     36: "CREATE_CHILD_SA",
     37: "INFORMATIONAL",
 }
+# Backwards-compatible union for callers that imported the historical constant.
+IKE_EXCHANGES = {**IKEV1_EXCHANGES, **IKEV2_EXCHANGES}
 
 
 @dataclass
@@ -58,20 +62,26 @@ class AnalysisReport:
 
 
 def _ike_version_and_exchange(payload: bytes) -> tuple[str, str]:
-    """Read fixed IKE header fields only; encrypted payloads remain opaque."""
+    """Read fixed IKE header fields and map exchange types by protocol version."""
     if len(payload) < 28:
         return "IKE", "Truncated IKE header"
     version = payload[17] >> 4
     exchange_code = payload[18]
-    exchange = IKE_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
-    if version >= 2:
-        return "IKEv2", exchange
-    return "IKE", exchange
+    if version == 2:
+        return "IKEv2", IKEV2_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
+    if version == 1:
+        return "IKE", IKEV1_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
+    return f"IKEv{version}", f"Exchange {exchange_code}"
 
 
 def _is_ike_header(payload: bytes) -> bool:
-    return len(payload) >= 28 and (payload[17] >> 4) in {1, 2}
-
+    """Validate the visible fixed IKE header before classifying UDP/500 or NAT-T data."""
+    if len(payload) < 28 or (payload[17] >> 4) not in {1, 2}:
+        return False
+    # The IKE header's own length excludes the optional 4-byte NAT-T non-ESP marker.
+    # Require a plausible declared header length, but allow capture-truncated payloads.
+    declared_length = struct.unpack("!I", payload[24:28])[0]
+    return declared_length >= 28
 
 def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
     """Read the repository's historical marker fixture (not a real packet trace)."""
@@ -103,84 +113,89 @@ def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
 
 
 def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
-    """Parse classic PCAP and PCAPNG through Scapy; never decrypt payloads."""
+    """Parse classic PCAP and PCAPNG through a streaming Scapy reader."""
     try:
-        from scapy.all import AH, ESP, IP, IPv6, UDP, rdpcap
+        from scapy.all import AH, ESP, IP, IPv6, UDP
+        from scapy.utils import PcapReader
     except ImportError as exc:
         raise RuntimeError("PCAP parsing needs Scapy. Install it with: python -m pip install scapy") from exc
 
+    packets: list[dict[str, Any]] = []
     try:
-        capture = rdpcap(str(path))
+        # PcapReader auto-detects classic PCAP versus PCAPNG. Unlike rdpcap, it
+        # doesn't materialize the entire capture before the packet-count guard.
+        with PcapReader(str(path)) as capture:
+            for index, packet in enumerate(capture):
+                if index >= MAX_PACKET_COUNT:
+                    raise ValueError(
+                        f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures."
+                    )
+                src = "unknown"
+                dst = "unknown"
+                source_port: int | None = None
+                dest_port: int | None = None
+                protocol = "Other"
+                info = "Non-IP or unrelated traffic"
+                exchange = ""
+                ip = packet.getlayer(IP)
+                ipv6 = packet.getlayer(IPv6)
+                udp = packet.getlayer(UDP)
+                if packet.haslayer(ESP):
+                    protocol, info = "ESP", "ESP encrypted payload"
+                elif packet.haslayer(AH):
+                    protocol, info = "AH", "Authentication Header"
+                if ip is not None:
+                    src, dst = str(ip.src), str(ip.dst)
+                    if int(ip.proto) == 50:
+                        protocol, info = "ESP", "ESP encrypted payload"
+                    elif int(ip.proto) == 51:
+                        protocol, info = "AH", "Authentication Header"
+                elif ipv6 is not None:
+                    src, dst = str(ipv6.src), str(ipv6.dst)
+                    next_header = int(ipv6.nh)
+                    if next_header == 50:
+                        protocol, info = "ESP", "ESP encrypted payload"
+                    elif next_header == 51:
+                        protocol, info = "AH", "Authentication Header"
+
+                if udp is not None:
+                    source_port, dest_port = int(udp.sport), int(udp.dport)
+                    if source_port in IKE_PORTS or dest_port in IKE_PORTS:
+                        payload = bytes(udp.payload)
+                        if 4500 in {source_port, dest_port} and payload[:4] != b"\\x00\\x00\\x00\\x00":
+                            if len(payload) == 1 and payload == b"\\xff":
+                                protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
+                            elif len(payload) >= 8:
+                                protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
+                            else:
+                                protocol, info = "UDP/4500", "Short NAT-T payload"
+                        else:
+                            ike_payload = payload[4:] if payload.startswith(b"\\x00\\x00\\x00\\x00") else payload
+                            if _is_ike_header(ike_payload):
+                                protocol, exchange = _ike_version_and_exchange(ike_payload)
+                                info = f"{protocol} · {exchange}"
+                            elif payload:
+                                protocol, info = "UDP/500 or 4500", "IKE-like port; header not recognised"
+                            else:
+                                protocol, info = "UDP/500 or 4500", "Empty IKE/NAT-T payload"
+
+                packets.append({
+                    "index": index,
+                    "proto": protocol,
+                    "src": src,
+                    "dst": dst,
+                    "sport": source_port,
+                    "dport": dest_port,
+                    "len": int(len(packet)),
+                    "ts": float(getattr(packet, "time", index)),
+                    "info": info,
+                    "exchange": exchange,
+                })
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("Could not read this capture. Check that it is a valid PCAP or PCAPNG file.") from exc
-    if len(capture) > MAX_PACKET_COUNT:
-        raise ValueError(f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures.")
-
-    packets: list[dict[str, Any]] = []
-    for index, packet in enumerate(capture):
-        src = "unknown"
-        dst = "unknown"
-        source_port: int | None = None
-        dest_port: int | None = None
-        protocol = "Other"
-        info = "Non-IP or unrelated traffic"
-        exchange = ""
-        ip = packet.getlayer(IP)
-        ipv6 = packet.getlayer(IPv6)
-        udp = packet.getlayer(UDP)
-        if packet.haslayer(ESP):
-            protocol, info = "ESP", "ESP encrypted payload"
-        elif packet.haslayer(AH):
-            protocol, info = "AH", "Authentication Header"
-        if ip is not None:
-            src, dst = str(ip.src), str(ip.dst)
-            if int(ip.proto) == 50:
-                protocol, info = "ESP", "ESP encrypted payload"
-            elif int(ip.proto) == 51:
-                protocol, info = "AH", "Authentication Header"
-        elif ipv6 is not None:
-            src, dst = str(ipv6.src), str(ipv6.dst)
-            next_header = int(ipv6.nh)
-            if next_header == 50:
-                protocol, info = "ESP", "ESP encrypted payload"
-            elif next_header == 51:
-                protocol, info = "AH", "Authentication Header"
-
-        if udp is not None:
-            source_port, dest_port = int(udp.sport), int(udp.dport)
-            if source_port in IKE_PORTS or dest_port in IKE_PORTS:
-                payload = bytes(udp.payload)
-                if 4500 in {source_port, dest_port} and payload[:4] != b"\x00\x00\x00\x00":
-                    if len(payload) == 1 and payload == b"\xff":
-                        protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
-                    elif len(payload) >= 8:
-                        protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
-                    else:
-                        protocol, info = "UDP/4500", "Short NAT-T payload"
-                else:
-                    ike_payload = payload[4:] if payload.startswith(b"\x00\x00\x00\x00") else payload
-                    if _is_ike_header(ike_payload):
-                        protocol, exchange = _ike_version_and_exchange(ike_payload)
-                        info = f"{protocol} · {exchange}"
-                    elif payload:
-                        protocol, info = "UDP/500 or 4500", "IKE-like port; header not recognised"
-                    else:
-                        protocol, info = "UDP/500 or 4500", "Empty IKE/NAT-T payload"
-
-        packets.append({
-            "index": index,
-            "proto": protocol,
-            "src": src,
-            "dst": dst,
-            "sport": source_port,
-            "dport": dest_port,
-            "len": int(len(packet)),
-            "ts": float(getattr(packet, "time", index)),
-            "info": info,
-            "exchange": exchange,
-        })
     return packets
-
 
 def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
     """Compatibility entry point: parse legacy marker fixtures and real PCAP/PCAPNG."""
@@ -270,7 +285,7 @@ def analyze_pcap(path: str | Path) -> AnalysisReport:
             exchange=str(packet.get("exchange", "")),
         )
         report.packets.append(summary)
-        if proto in {"IKE", "IKEv2", "ESP", "AH"}:
+        if proto in {"IKE", "IKEv2", "ESP", "AH", "NAT-T keepalive"}:
             report.ipsec_related += 1
         if proto == "IKE":
             report.ike_count += 1
