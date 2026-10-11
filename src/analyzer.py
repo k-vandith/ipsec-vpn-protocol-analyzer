@@ -213,16 +213,16 @@ def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
         header = handle.read(24)
     if len(header) < 4:
         raise ValueError("File is too small to be a PCAP or PCAPNG capture.")
-    # The old repository's fixture has a PCAP magic number followed by an all-zero
-    # global header. Only read the complete file for this rare compatibility path;
-    # valid captures are streamed by Scapy below instead of copied into memory first.
+    # Historical marker fixtures are not valid packet captures. Never convert
+    # strings in an invalid PCAP into fabricated packet observations.
     classic_magic = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"}
     if len(header) >= 24 and header[:4] in classic_magic and header[4:24] == b"\x00" * 20:
         data = path.read_bytes()
         if any(marker in data[24:] for marker in (b"IKE_SA_INIT", b"ESP_PACKET", b"AH_PACKET", b"ISAKMP")):
-            packets = _parse_synthetic_markers(data)
-            if packets:
-                return packets
+            raise ValueError(
+                "This file is a legacy synthetic marker fixture, not a valid packet capture. "
+                "Use the built-in demo or upload a real PCAP/PCAPNG file."
+            )
     return _parse_capture_scapy(path)
 
 
