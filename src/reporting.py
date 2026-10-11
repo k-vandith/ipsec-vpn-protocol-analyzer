@@ -43,7 +43,7 @@ def build_report_json(
 
 def _spreadsheet_safe(value: Any) -> Any:
     """Prevent untrusted CSV text from being evaluated as a spreadsheet formula."""
-    if isinstance(value, str) and value.lstrip(" \\t\\r\\n").startswith(("=", "+", "-", "@")):
+    if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
         return "'" + value
     return value
 
