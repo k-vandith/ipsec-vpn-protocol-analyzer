@@ -62,13 +62,28 @@ def test_pdf_report_is_available_only_with_optional_extra() -> None:
 
 
 
+def test_packet_csv_neutralizes_formula_like_capture_names() -> None:
+    report = AnalysisReport(
+        total_packets=1,
+        capture_name='=HYPERLINK("https://evil.invalid","click")',
+        packets=[PacketSummary(
+            index=0, timestamp=1.0, src="192.0.2.1", dst="198.51.100.2",
+            protocol="Other", length=60, info="regular packet",
+        )],
+    )
+
+    csv_text = build_packets_csv([report])
+
+    assert "'=HYPERLINK" in csv_text
+
+
 def test_packets_csv_neutralizes_formula_cells_and_preserves_zero_ports() -> None:
     report = AnalysisReport(
         total_packets=1,
         capture_name='  =HYPERLINK("https://attacker.invalid", "open")',
         packets=[PacketSummary(
             index=0, timestamp=0.0, src="192.0.2.1", dst="192.0.2.2",
-            protocol="Other", length=60, info="=1+1",
+            protocol="\t=1+1", length=60, info="=1+1",
             src_port=0, dst_port=0,
         )],
     )
@@ -77,6 +92,7 @@ def test_packets_csv_neutralizes_formula_cells_and_preserves_zero_ports() -> Non
     assert len(rows) == 1
     assert rows[0]["capture"].startswith("'")
     assert rows[0]["capture"].endswith('=HYPERLINK("https://attacker.invalid", "open")')
+    assert rows[0]["protocol"] == "'\t=1+1"
     assert rows[0]["info"] == "'=1+1"
     assert rows[0]["source_port"] == "0"
     assert rows[0]["destination_port"] == "0"

@@ -41,9 +41,12 @@ def build_report_json(
     }, indent=2)
 
 
-def _spreadsheet_safe(value: Any) -> Any:
-    """Prevent untrusted CSV text from being evaluated as a spreadsheet formula."""
-    if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+def _spreadsheet_safe(value: object) -> object:
+    """Neutralize formula-like user-controlled strings before writing CSV."""
+    if not isinstance(value, str):
+        return value
+    trimmed = value.lstrip(" \t\r\n")
+    if value.startswith(("\t", "\r", "\n")) or (trimmed and trimmed[0] in "=+-@"):
         return "'" + value
     return value
 
@@ -58,20 +61,22 @@ def build_packets_csv(reports: Iterable[AnalysisReport]) -> str:
     writer.writeheader()
     for report in reports:
         for packet in report.packets:
-            row = {
-                "capture": report.capture_name,
-                "packet_index": packet.index,
-                "timestamp": packet.timestamp,
-                "source": packet.src,
-                "source_port": packet.src_port if packet.src_port is not None else "",
-                "destination": packet.dst,
-                "destination_port": packet.dst_port if packet.dst_port is not None else "",
-                "protocol": packet.protocol,
-                "exchange": packet.exchange,
-                "length": packet.length,
-                "info": packet.info,
-            }
-            writer.writerow({key: _spreadsheet_safe(value) for key, value in row.items()})
+            writer.writerow({
+                key: _spreadsheet_safe(value)
+                for key, value in {
+                    "capture": report.capture_name,
+                    "packet_index": packet.index,
+                    "timestamp": packet.timestamp,
+                    "source": packet.src,
+                    "source_port": packet.src_port if packet.src_port is not None else "",
+                    "destination": packet.dst,
+                    "destination_port": packet.dst_port if packet.dst_port is not None else "",
+                    "protocol": packet.protocol,
+                    "exchange": packet.exchange,
+                    "length": packet.length,
+                    "info": packet.info,
+                }.items()
+            })
     return output.getvalue()
 
 
