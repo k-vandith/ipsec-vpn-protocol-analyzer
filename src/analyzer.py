@@ -162,15 +162,15 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
                     source_port, dest_port = int(udp.sport), int(udp.dport)
                     if source_port in IKE_PORTS or dest_port in IKE_PORTS:
                         payload = bytes(udp.payload)
-                        if 4500 in {source_port, dest_port} and payload[:4] != b"\\x00\\x00\\x00\\x00":
-                            if len(payload) == 1 and payload == b"\\xff":
+                        if 4500 in {source_port, dest_port} and payload[:4] != b"\x00\x00\x00\x00":
+                            if len(payload) == 1 and payload == b"\xff":
                                 protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
                             elif len(payload) >= 8:
                                 protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
                             else:
                                 protocol, info = "UDP/4500", "Short NAT-T payload"
                         else:
-                            ike_payload = payload[4:] if payload.startswith(b"\\x00\\x00\\x00\\x00") else payload
+                            ike_payload = payload[4:] if payload.startswith(b"\x00\x00\x00\x00") else payload
                             if _is_ike_header(ike_payload):
                                 protocol, exchange = _ike_version_and_exchange(ike_payload)
                                 info = f"{protocol} · {exchange}"
