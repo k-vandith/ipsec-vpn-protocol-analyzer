@@ -107,7 +107,7 @@ def _parse_synthetic_markers(data: bytes) -> list[dict[str, Any]]:
 
 
 def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
-    """Parse classic PCAP and PCAPNG through Scapy; never decrypt payloads."""
+    """Parse classic PCAP and PCAPNG incrementally through Scapy."""
     try:
         from scapy.all import AH, ESP, IP, IPv6, UDP, PcapReader
     except ImportError as exc:
@@ -122,55 +122,57 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
     try:
         for index, packet in enumerate(capture):
             if index >= MAX_PACKET_COUNT:
-                raise ValueError(f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures.")
-        src = "unknown"
-        dst = "unknown"
-        source_port: int | None = None
-        dest_port: int | None = None
-        protocol = "Other"
-        info = "Non-IP or unrelated traffic"
-        exchange = ""
-        ip = packet.getlayer(IP)
-        ipv6 = packet.getlayer(IPv6)
-        udp = packet.getlayer(UDP)
-        if packet.haslayer(ESP):
-            protocol, info = "ESP", "ESP encrypted payload"
-        elif packet.haslayer(AH):
-            protocol, info = "AH", "Authentication Header"
-        if ip is not None:
-            src, dst = str(ip.src), str(ip.dst)
-            if int(ip.proto) == 50:
+                raise ValueError(
+                    f"Capture contains more than {MAX_PACKET_COUNT:,} packets; split it into smaller captures."
+                )
+            src = "unknown"
+            dst = "unknown"
+            source_port: int | None = None
+            dest_port: int | None = None
+            protocol = "Other"
+            info = "Non-IP or unrelated traffic"
+            exchange = ""
+            ip = packet.getlayer(IP)
+            ipv6 = packet.getlayer(IPv6)
+            udp = packet.getlayer(UDP)
+            if packet.haslayer(ESP):
                 protocol, info = "ESP", "ESP encrypted payload"
-            elif int(ip.proto) == 51:
+            elif packet.haslayer(AH):
                 protocol, info = "AH", "Authentication Header"
-        elif ipv6 is not None:
-            src, dst = str(ipv6.src), str(ipv6.dst)
-            next_header = int(ipv6.nh)
-            if next_header == 50:
-                protocol, info = "ESP", "ESP encrypted payload"
-            elif next_header == 51:
-                protocol, info = "AH", "Authentication Header"
+            if ip is not None:
+                src, dst = str(ip.src), str(ip.dst)
+                if int(ip.proto) == 50:
+                    protocol, info = "ESP", "ESP encrypted payload"
+                elif int(ip.proto) == 51:
+                    protocol, info = "AH", "Authentication Header"
+            elif ipv6 is not None:
+                src, dst = str(ipv6.src), str(ipv6.dst)
+                next_header = int(ipv6.nh)
+                if next_header == 50:
+                    protocol, info = "ESP", "ESP encrypted payload"
+                elif next_header == 51:
+                    protocol, info = "AH", "Authentication Header"
 
-        if udp is not None:
-            source_port, dest_port = int(udp.sport), int(udp.dport)
-            if source_port in IKE_PORTS or dest_port in IKE_PORTS:
-                payload = bytes(udp.payload)
-                if 4500 in {source_port, dest_port} and payload[:4] != b"\x00\x00\x00\x00":
-                    if len(payload) == 1 and payload == b"\xff":
-                        protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
-                    elif len(payload) >= 8:
-                        protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
+            if udp is not None:
+                source_port, dest_port = int(udp.sport), int(udp.dport)
+                if source_port in IKE_PORTS or dest_port in IKE_PORTS:
+                    payload = bytes(udp.payload)
+                    if 4500 in {source_port, dest_port} and payload[:4] != b"\\x00\\x00\\x00\\x00":
+                        if len(payload) == 1 and payload == b"\\xff":
+                            protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
+                        elif len(payload) >= 8:
+                            protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
+                        else:
+                            protocol, info = "UDP/4500", "Short NAT-T payload"
                     else:
-                        protocol, info = "UDP/4500", "Short NAT-T payload"
-                else:
-                    ike_payload = payload[4:] if payload.startswith(b"\x00\x00\x00\x00") else payload
-                    if _is_ike_header(ike_payload):
-                        protocol, exchange = _ike_version_and_exchange(ike_payload)
-                        info = f"{protocol} · {exchange}"
-                    elif payload:
-                        protocol, info = "UDP/500 or 4500", "IKE-like port; header not recognised"
-                    else:
-                        protocol, info = "UDP/500 or 4500", "Empty IKE/NAT-T payload"
+                        ike_payload = payload[4:] if payload.startswith(b"\\x00\\x00\\x00\\x00") else payload
+                        if _is_ike_header(ike_payload):
+                            protocol, exchange = _ike_version_and_exchange(ike_payload)
+                            info = f"{protocol} · {exchange}"
+                        elif payload:
+                            protocol, info = "UDP/500 or 4500", "IKE-like port; header not recognised"
+                        else:
+                            protocol, info = "UDP/500 or 4500", "Empty IKE/NAT-T payload"
 
             packets.append({
                 "index": index,
@@ -187,7 +189,6 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
     finally:
         capture.close()
     return packets
-
 
 def _parse_pcap_simple(path: Path) -> list[dict[str, Any]]:
     """Compatibility entry point: parse legacy marker fixtures and real PCAP/PCAPNG."""
