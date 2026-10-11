@@ -10,15 +10,19 @@ from typing import Any
 IKE_PORTS = {500, 4500}
 MAX_CAPTURE_BYTES = 100 * 1024 * 1024
 MAX_PACKET_COUNT = 1_000_000
-IKE_EXCHANGES = {
+IKEV1_EXCHANGES = {
     2: "Main mode",
     4: "Aggressive mode",
     32: "Quick mode",
+}
+IKEV2_EXCHANGES = {
     34: "IKE_SA_INIT",
     35: "IKE_AUTH",
     36: "CREATE_CHILD_SA",
     37: "INFORMATIONAL",
 }
+# Backwards-compatible union for callers that imported the historical constant.
+IKE_EXCHANGES = {**IKEV1_EXCHANGES, **IKEV2_EXCHANGES}
 
 
 @dataclass
@@ -58,15 +62,16 @@ class AnalysisReport:
 
 
 def _ike_version_and_exchange(payload: bytes) -> tuple[str, str]:
-    """Read fixed IKE header fields only; encrypted payloads remain opaque."""
+    """Read fixed IKE header fields and map exchange types by protocol version."""
     if len(payload) < 28:
         return "IKE", "Truncated IKE header"
     version = payload[17] >> 4
     exchange_code = payload[18]
-    exchange = IKE_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
-    if version >= 2:
-        return "IKEv2", exchange
-    return "IKE", exchange
+    if version == 2:
+        return "IKEv2", IKEV2_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
+    if version == 1:
+        return "IKE", IKEV1_EXCHANGES.get(exchange_code, f"Exchange {exchange_code}")
+    return f"IKEv{version}", f"Exchange {exchange_code}"
 
 
 def _is_ike_header(payload: bytes) -> bool:
@@ -157,15 +162,15 @@ def _parse_capture_scapy(path: Path) -> list[dict[str, Any]]:
                 source_port, dest_port = int(udp.sport), int(udp.dport)
                 if source_port in IKE_PORTS or dest_port in IKE_PORTS:
                     payload = bytes(udp.payload)
-                    if 4500 in {source_port, dest_port} and payload[:4] != b"\\x00\\x00\\x00\\x00":
-                        if len(payload) == 1 and payload == b"\\xff":
+                    if 4500 in {source_port, dest_port} and payload[:4] != b"\x00\x00\x00\x00":
+                        if len(payload) == 1 and payload == b"\xff":
                             protocol, info = "NAT-T keepalive", "NAT traversal keepalive"
                         elif len(payload) >= 8:
                             protocol, info = "ESP", "ESP encapsulated in UDP (NAT-T)"
                         else:
                             protocol, info = "UDP/4500", "Short NAT-T payload"
                     else:
-                        ike_payload = payload[4:] if payload.startswith(b"\\x00\\x00\\x00\\x00") else payload
+                        ike_payload = payload[4:] if payload.startswith(b"\x00\x00\x00\x00") else payload
                         if _is_ike_header(ike_payload):
                             protocol, exchange = _ike_version_and_exchange(ike_payload)
                             info = f"{protocol} · {exchange}"
@@ -295,7 +300,7 @@ def analyze_pcap(path: str | Path) -> AnalysisReport:
             exchange=str(packet.get("exchange", "")),
         )
         report.packets.append(summary)
-        if proto in {"IKE", "IKEv2", "ESP", "AH"}:
+        if proto in {"IKE", "IKEv2", "ESP", "AH", "NAT-T keepalive"}:
             report.ipsec_related += 1
         if proto == "IKE":
             report.ike_count += 1

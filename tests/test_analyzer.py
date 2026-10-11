@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import struct
 
 import pytest
 
@@ -9,6 +10,7 @@ from src.analyzer import (
     AnalysisReport,
     _capture_format,
     _is_ike_header,
+    _ike_version_and_exchange,
     analyze_pcap,
     build_demo_capture,
     report_to_dict,
@@ -141,3 +143,53 @@ def test_capture_format_uses_file_signature_not_suffix(tmp_path: Path) -> None:
     path = tmp_path / "misleading.pcap"
     path.write_bytes(bytes.fromhex("0a0d0d0a" + "00" * 20))
     assert _capture_format(path) == "PCAPNG"
+
+
+def _ike_payload(version: int, exchange: int, declared_length: int = 28) -> bytes:
+    payload = bytearray(28)
+    payload[17] = version << 4
+    payload[18] = exchange
+    payload[24:28] = struct.pack("!I", declared_length)
+    return bytes(payload)
+
+
+def test_ike_exchange_names_are_version_specific() -> None:
+    assert _ike_version_and_exchange(_ike_payload(1, 2)) == ("IKE", "Main mode")
+    assert _ike_version_and_exchange(_ike_payload(1, 34)) == ("IKE", "Exchange 34")
+    assert _ike_version_and_exchange(_ike_payload(2, 34)) == ("IKEv2", "IKE_SA_INIT")
+    assert _ike_version_and_exchange(_ike_payload(2, 2)) == ("IKEv2", "Exchange 2")
+
+
+def test_malformed_ike_header_length_is_not_classified_as_ike(tmp_path: Path) -> None:
+    from scapy.all import Ether, IP, Raw, UDP, wrpcap
+
+    capture = tmp_path / "malformed-ike.pcap"
+    malformed = _ike_payload(2, 34, declared_length=0)
+    wrpcap(str(capture), [Ether() / IP(src="192.0.2.1", dst="192.0.2.2") / UDP(sport=500, dport=500) / Raw(load=malformed)])
+
+    report = analyze_pcap(capture)
+    assert report.ikev2_count == 0
+    assert report.ike_count == 0
+    assert report.protocols.get("UDP/500 or 4500") == 1
+
+
+def test_packet_count_limit_is_checked_while_reading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.analyzer as analyzer_module
+
+    capture = build_demo_capture(tmp_path / "many-packets.pcap")
+    monkeypatch.setattr(analyzer_module, "MAX_PACKET_COUNT", 2)
+
+    with pytest.raises(ValueError, match="more than 2 packets"):
+        analyze_pcap(capture)
+
+
+def test_nat_t_keepalive_is_counted_as_ipsec_related(tmp_path: Path) -> None:
+    from scapy.all import Ether, IP, Raw, UDP, wrpcap
+
+    capture = tmp_path / "natt-keepalive.pcap"
+    packet = Ether() / IP(src="192.0.2.1", dst="192.0.2.2") / UDP(sport=4500, dport=4500) / Raw(load=b"\xff")
+    wrpcap(str(capture), [packet])
+
+    report = analyze_pcap(capture)
+    assert report.protocols.get("NAT-T keepalive") == 1
+    assert report.ipsec_related == 1
