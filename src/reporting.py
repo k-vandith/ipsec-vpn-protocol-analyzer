@@ -41,6 +41,16 @@ def build_report_json(
     }, indent=2)
 
 
+def _spreadsheet_safe(value: object) -> object:
+    """Neutralize formula-like user-controlled strings before writing CSV."""
+    if not isinstance(value, str):
+        return value
+    trimmed = value.lstrip(" \\t\\r\\n")
+    if value.startswith(("\\t", "\\r", "\\n")) or (trimmed and trimmed[0] in "=+-@"):
+        return "'" + value
+    return value
+
+
 def build_packets_csv(reports: Iterable[AnalysisReport]) -> str:
     output = io.StringIO()
     fields = [
@@ -52,17 +62,20 @@ def build_packets_csv(reports: Iterable[AnalysisReport]) -> str:
     for report in reports:
         for packet in report.packets:
             writer.writerow({
-                "capture": report.capture_name,
-                "packet_index": packet.index,
-                "timestamp": packet.timestamp,
-                "source": packet.src,
-                "source_port": packet.src_port or "",
-                "destination": packet.dst,
-                "destination_port": packet.dst_port or "",
-                "protocol": packet.protocol,
-                "exchange": packet.exchange,
-                "length": packet.length,
-                "info": packet.info,
+                key: _spreadsheet_safe(value)
+                for key, value in {
+                    "capture": report.capture_name,
+                    "packet_index": packet.index,
+                    "timestamp": packet.timestamp,
+                    "source": packet.src,
+                    "source_port": packet.src_port or "",
+                    "destination": packet.dst,
+                    "destination_port": packet.dst_port or "",
+                    "protocol": packet.protocol,
+                    "exchange": packet.exchange,
+                    "length": packet.length,
+                    "info": packet.info,
+                }.items()
             })
     return output.getvalue()
 
