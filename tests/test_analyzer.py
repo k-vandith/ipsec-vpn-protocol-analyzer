@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from src.analyzer import AnalysisReport, analyze_pcap, build_demo_capture, report_to_dict
+from src.analyzer import (
+    MAX_PACKET_COUNT,
+    AnalysisReport,
+    _capture_format,
+    _is_ike_header,
+    analyze_pcap,
+    build_demo_capture,
+    report_to_dict,
+)
 from src.ipsec_features import handshake_anomaly_score
 
 
@@ -70,3 +78,69 @@ def test_heuristic_indicator_has_an_explanation() -> None:
     assert 0 <= result["anomaly_score"] <= 1
     assert result["method"] == "heuristic_rules"
     assert "not a probability" in result["explanation"]
+
+
+
+def test_ike_header_requires_sane_declared_message_length() -> None:
+    import struct
+
+    header = bytearray(28)
+    header[17] = 0x20
+    struct.pack_into("!I", header, 24, 28)
+    assert _is_ike_header(bytes(header))
+
+    struct.pack_into("!I", header, 24, 0)
+    assert not _is_ike_header(bytes(header))
+
+    struct.pack_into("!I", header, 24, 29)
+    assert not _is_ike_header(bytes(header))
+
+
+def test_capture_packet_limit_is_enforced_while_streaming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scapy.all
+
+    capture_file = tmp_path / "capture.pcap"
+    capture_file.write_bytes(
+        b"\\xd4\\xc3\\xb2\\xa1" + b"\\x02\\x00\\x04\\x00" + b"\\x00" * 16
+    )
+    monkeypatch.setattr("src.analyzer.MAX_PACKET_COUNT", 2)
+
+    class Packet:
+        time = 1.0
+
+        def getlayer(self, _layer):
+            return None
+
+        def haslayer(self, _layer):
+            return False
+
+        def __len__(self):
+            return 42
+
+    class Reader:
+        def __init__(self, _path: str) -> None:
+            self.yielded = 0
+            self.closed = False
+
+        def __iter__(self):
+            for _ in range(5):
+                self.yielded += 1
+                yield Packet()
+
+        def close(self):
+            self.closed = True
+
+    reader = Reader(str(capture_file))
+    monkeypatch.setattr(scapy.all, "PcapReader", lambda _path: reader)
+
+    with pytest.raises(ValueError, match="more than 2 packets"):
+        analyze_pcap(capture_file)
+
+    assert reader.yielded == 3
+    assert reader.closed
+
+
+def test_capture_format_uses_file_signature_not_suffix(tmp_path: Path) -> None:
+    path = tmp_path / "misleading.pcap"
+    path.write_bytes(b"\\x0a\\x0d\\x0d\\x0a" + b"\\x00" * 20)
+    assert _capture_format(path) == "PCAPNG"
