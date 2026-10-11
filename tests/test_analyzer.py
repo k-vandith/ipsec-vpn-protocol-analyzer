@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from src.analyzer import (
-    MAX_PACKET_COUNT,
     AnalysisReport,
     _capture_format,
     _is_ike_header,
@@ -100,9 +99,7 @@ def test_capture_packet_limit_is_enforced_while_streaming(tmp_path: Path, monkey
     import scapy.all
 
     capture_file = tmp_path / "capture.pcap"
-    capture_file.write_bytes(
-        b"\\xd4\\xc3\\xb2\\xa1" + b"\\x02\\x00\\x04\\x00" + b"\\x00" * 16
-    )
+    capture_file.write_bytes(bytes.fromhex("d4c3b2a102000400" + "00" * 16))
     monkeypatch.setattr("src.analyzer.MAX_PACKET_COUNT", 2)
 
     class Packet:
@@ -142,5 +139,5 @@ def test_capture_packet_limit_is_enforced_while_streaming(tmp_path: Path, monkey
 
 def test_capture_format_uses_file_signature_not_suffix(tmp_path: Path) -> None:
     path = tmp_path / "misleading.pcap"
-    path.write_bytes(b"\\x0a\\x0d\\x0d\\x0a" + b"\\x00" * 20)
+    path.write_bytes(bytes.fromhex("0a0d0d0a" + "00" * 20))
     assert _capture_format(path) == "PCAPNG"
