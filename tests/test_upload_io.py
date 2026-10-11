@@ -55,3 +55,31 @@ def test_duplicate_filenames_are_not_overwritten(tmp_path: Path) -> None:
     assert [path.name for path in staged] == ["vpn.conf", "vpn-2.conf"]
     assert staged[0].read_text(encoding="utf-8") == "conn first\n"
     assert staged[1].read_text(encoding="utf-8") == "conn second\n"
+
+
+
+def test_batch_validation_preserves_read_cursor_for_file_like_uploads(tmp_path: Path) -> None:
+    capture_path = build_demo_capture(tmp_path / "cursor-source.pcap")
+    capture_bytes = capture_path.read_bytes()
+
+    class UploadStream:
+        def __init__(self, name: str, payload: bytes) -> None:
+            self.name = name
+            self.stream = io.BytesIO(payload)
+
+        def read(self) -> bytes:
+            return self.stream.read()
+
+        def tell(self) -> int:
+            return self.stream.tell()
+
+        def seek(self, position: int) -> int:
+            return self.stream.seek(position)
+
+    capture = UploadStream("trace.pcap", capture_bytes)
+    config = UploadStream("vpn.conf", b"conn sample\\nike=aes128-sha1-modp1024\\n")
+
+    validate_upload_batch([capture], [config])
+    staged = stage_captures([capture], tmp_path / "cursor-stage")
+
+    assert staged[0].read_bytes() == capture_bytes
