@@ -20,7 +20,24 @@ def _payload(upload: object) -> bytes:
         read = getattr(upload, "read", None)
         if not callable(read):
             raise ValueError("An uploaded item could not be read.")
-        value = read()
+        tell = getattr(upload, "tell", None)
+        seek = getattr(upload, "seek", None)
+        position = None
+        if callable(tell) and callable(seek):
+            try:
+                position = tell()
+            except (OSError, ValueError):
+                position = None
+        try:
+            value = read()
+        finally:
+            # validate_upload_batch and the staging step may inspect the same file-like
+            # object. Restore seekable streams so validation doesn't consume the upload.
+            if position is not None:
+                try:
+                    seek(position)
+                except (OSError, ValueError):
+                    pass
     if not isinstance(value, (bytes, bytearray)):
         raise ValueError("Uploaded data must be a file.")
     return bytes(value)
